@@ -19,13 +19,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get the last user message
     const lastMessage = messages[messages.length - 1]?.content || '';
     
-    // Add context for voice assistant
-    const prompt = `You are a helpful voice assistant. Keep your responses concise and natural for speech. User said: "${lastMessage}"`;
+    const prompt = `You are an intelligent and helpful AI assistant. The user has asked: "${lastMessage}"
 
-    // Call Google Gemini API
+Please provide a comprehensive, detailed response that:
+- Explains the topic thoroughly
+- Includes relevant examples or context
+- Offers additional insights or related information
+- Is informative yet easy to understand
+
+Give a well-structured response of 4-6 sentences that fully addresses the user's question.`;
+
+    // Add timeout for network requests
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
       {
@@ -46,25 +55,47 @@ export async function POST(request: NextRequest) {
             maxOutputTokens: 500,
           }
         }),
+        signal: controller.signal
       }
     );
 
+    clearTimeout(timeoutId);
+
     if (!response.ok) {
       const errorData = await response.text();
+      
+      // Handle network errors more gracefully
+      if (response.status === 0 || !response.status) {
+        return NextResponse.json(
+          { error: 'Network unavailable - please check your internet connection', offline: true },
+          { status: 503 }
+        );
+      }
+      
       console.error('Gemini API error:', response.status, errorData);
-      throw new Error(`Gemini API error: ${response.status}`);
+      throw new Error(`Gemini API error: ${response.status} - ${errorData}`);
     }
 
     const data = await response.json();
-    
-    // Extract the response text
     const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || 'Sorry, I could not generate a response.';
     
     return NextResponse.json({ reply });
-  } catch (error) {
-    console.error('Gemini API error:', error);
+  } catch (apiError: any) {
+    console.error('Complete API error:', apiError);
+    
+    // Handle network timeout/abort errors
+    if (apiError.name === 'AbortError' || apiError.message.includes('fetch')) {
+      return NextResponse.json(
+        { 
+          error: 'Unable to connect to AI service. Please check your internet connection and try again.',
+          offline: true 
+        },
+        { status: 503 }
+      );
+    }
+    
     return NextResponse.json(
-      { error: 'Failed to process request' },
+      { error: `Failed to process request: ${apiError.message}` },
       { status: 500 }
     );
   }

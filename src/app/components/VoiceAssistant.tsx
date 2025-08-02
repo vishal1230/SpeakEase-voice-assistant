@@ -16,10 +16,39 @@ export const VoiceAssistant: React.FC = () => {
   const [conversationInput, setConversationInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [responseLength, setResponseLength] = useState<'short' | 'long'>('long');
+  const [isOnline, setIsOnline] = useState(true);
+  const [networkStatus, setNetworkStatus] = useState('online');
   const conversationEndRef = useRef<HTMLDivElement>(null);
   
   const whisper = useWhisper();
   const tts = useTTS();
+  
+  // Network status monitoring
+  useEffect(() => {
+    const updateNetworkStatus = () => {
+      const online = navigator.onLine;
+      setIsOnline(online);
+      setNetworkStatus(online ? 'online' : 'offline');
+      
+      if (!online) {
+        console.log('Network went offline');
+      } else {
+        console.log('Network is back online');
+      }
+    };
+    
+    // Initial check
+    updateNetworkStatus();
+    
+    // Listen for network changes
+    window.addEventListener('online', updateNetworkStatus);
+    window.addEventListener('offline', updateNetworkStatus);
+    
+    return () => {
+      window.removeEventListener('online', updateNetworkStatus);
+      window.removeEventListener('offline', updateNetworkStatus);
+    };
+  }, []);
   
   const handleAudioData = useCallback((audioData: Float32Array) => {
     // Audio data handling
@@ -48,11 +77,16 @@ export const VoiceAssistant: React.FC = () => {
         }),
       });
       
+      const data = await response.json();
+      
+      // Handle offline/network errors
       if (!response.ok) {
-        throw new Error('API request failed');
+        if (response.status === 503 || data.offline) {
+          return "I'm currently offline and cannot access the AI service. Please check your internet connection and try again when you're back online.";
+        }
+        throw new Error(data.error || 'API request failed');
       }
       
-      const data = await response.json();
       const apiLatency = Date.now() - apiStartTime;
       
       setCurrentMetrics(prev => prev ? {
@@ -61,9 +95,15 @@ export const VoiceAssistant: React.FC = () => {
       } : null);
       
       return data.reply;
-    } catch (error) {
-      console.error('Gemini API error:', error);
-      return 'Sorry, I encountered an error processing your request.';
+    } catch (fetchError: any) {
+      console.error('Gemini API error:', fetchError);
+      
+      // Handle network errors specifically
+      if (fetchError.message.includes('fetch') || fetchError.name === 'TypeError') {
+        return "Network connection unavailable. I cannot access the AI service while offline. Please check your internet connection and try again.";
+      }
+      
+      return 'Sorry, I encountered an error processing your request. Please try again.';
     } finally {
       setIsTyping(false);
     }
@@ -73,6 +113,13 @@ export const VoiceAssistant: React.FC = () => {
     if (!text.trim()) return;
     
     setConversation(prev => [...prev, `User: ${text}`]);
+    
+    // Check if offline
+    if (!navigator.onLine) {
+      const offlineReply = "I'm currently offline and cannot access the AI service. Your message has been noted, but I cannot provide a response until the connection is restored.";
+      setConversation(prev => [...prev, `Assistant: ${offlineReply}`]);
+      return;
+    }
     
     const reply = await sendToGemini(text);
     setConversation(prev => [...prev, `Assistant: ${reply}`]);
@@ -142,7 +189,7 @@ export const VoiceAssistant: React.FC = () => {
               SpeakEase
             </h1>
             <p className="text-gray-600 max-w-md mx-auto">
-              Speak naturally or type to have intelligent conversations powered by Google Gemini AI
+              Intelligent voice conversations powered by Google Gemini AI
             </p>
             
             {/* Status Indicators */}
@@ -164,10 +211,35 @@ export const VoiceAssistant: React.FC = () => {
                   TTS {tts.isInitialized ? 'Ready' : 'Loading'}
                 </span>
               </div>
+              
+              <div className="flex items-center gap-2 px-3 py-2 bg-white/60 rounded-full shadow-sm">
+                <div className={`w-3 h-3 rounded-full ${
+                  isOnline ? 'bg-green-500 animate-pulse' : 'bg-red-500'
+                }`}></div>
+                <span className="text-sm font-medium text-gray-700">
+                  {isOnline ? 'Online' : 'Offline'}
+                </span>
+              </div>
             </div>
           </div>
         </div>
       </div>
+      
+      {/* Offline Banner */}
+      {!isOnline && (
+        <div className="bg-orange-500/90 backdrop-blur-md text-white">
+          <div className="max-w-4xl mx-auto px-6 py-3">
+            <div className="flex items-center justify-center gap-2">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.732-.833-2.464 0L4.35 16.5c-.77.833.192 2.5 1.732 2.5z" />
+              </svg>
+              <span className="text-sm font-medium">
+                You're offline - Voice recognition unavailable. Use text input or wait for connection.
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* Main Content */}
       <div className="max-w-4xl mx-auto px-6 py-8">
@@ -199,7 +271,7 @@ export const VoiceAssistant: React.FC = () => {
                   )}
                 </button>
                 <p className="mt-4 text-sm text-gray-600">
-                  {isActive ? 'Recording... Click to stop' : 'Click to start speaking'}
+                  {isActive ? 'Listening continuously... Click to stop' : 'Click to start continuous listening'}
                 </p>
               </div>
             </div>
