@@ -1,79 +1,64 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 export const useTTS = () => {
   const [isInitialized, setIsInitialized] = useState(false);
   const [isSynthesizing, setIsSynthesizing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  const workerRef = useRef<Worker | null>(null);
-  
   useEffect(() => {
-    // Only initialize on client side
-    if (typeof window === 'undefined') return;
-    
-    try {
-      workerRef.current = new Worker(
-        new URL('../workers/tts.worker.ts', import.meta.url)
-      );
-      
-      workerRef.current.onmessage = (event) => {
-        const { type, data } = event.data;
-        
-        switch (type) {
-          case 'INITIALIZED':
-            setIsInitialized(true);
-            setError(null);
-            break;
-          case 'SYNTHESIS_COMPLETE':
-            playAudio(data.text);
-            setIsSynthesizing(false);
-            break;
-          case 'ERROR':
-            setError(data.message);
-            setIsSynthesizing(false);
-            break;
-        }
-      };
-      
-      workerRef.current.onerror = (error) => {
-        setError('TTS worker initialization failed');
-        console.error('TTS Worker error:', error);
-      };
-      
-      // Initialize the worker
-      workerRef.current.postMessage({ type: 'INIT' });
-    } catch (err) {
-      setError('Failed to initialize TTS worker');
-      console.error('TTS initialization error:', err);
+    // Initialize TTS without worker for Netlify compatibility
+    if (typeof window !== 'undefined') {
+      // Check if browser supports speech synthesis
+      if ('speechSynthesis' in window) {
+        setIsInitialized(true);
+        setError(null);
+      } else {
+        setError('Text-to-speech not supported in this browser');
+      }
     }
-    
-    return () => {
-      workerRef.current?.terminate();
-    };
   }, []);
   
   const synthesize = useCallback((text: string) => {
-    if (workerRef.current && isInitialized) {
+    if (!isInitialized || !text.trim()) return;
+    
+    try {
       setIsSynthesizing(true);
-      workerRef.current.postMessage({ 
-        type: 'SYNTHESIZE', 
-        data: { text } 
-      });
-    } else {
-      // Fallback to direct Web Speech API
-      playAudio(text);
+      setError(null);
+      
+      // Use Web Speech API directly (no worker)
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        // Cancel any ongoing speech
+        window.speechSynthesis.cancel();
+        
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        utterance.volume = 1.0;
+        utterance.lang = 'en-US';
+        
+        utterance.onstart = () => {
+          console.log('TTS started');
+        };
+        
+        utterance.onend = () => {
+          setIsSynthesizing(false);
+          console.log('TTS completed');
+        };
+        
+        utterance.onerror = (event) => {
+          setIsSynthesizing(false);
+          setError(`TTS error: ${event.error}`);
+          console.error('TTS error:', event);
+        };
+        
+        window.speechSynthesis.speak(utterance);
+      }
+    } catch (error) {
+      setIsSynthesizing(false);
+      setError('Failed to synthesize speech');
+      console.error('TTS synthesis error:', error);
     }
   }, [isInitialized]);
-  
-  const playAudio = useCallback((text: string) => {
-    if (typeof window !== 'undefined' && window.speechSynthesis) {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1.0;
-      utterance.pitch = 1.0;
-      utterance.volume = 1.0;
-      window.speechSynthesis.speak(utterance);
-    }
-  }, []);
   
   return {
     isInitialized,
