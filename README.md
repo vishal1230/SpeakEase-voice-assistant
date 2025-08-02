@@ -2,6 +2,11 @@
 
 A modern, feature-rich voice assistant built with Next.js 14, TypeScript, and Google Gemini AI. This Progressive Web App (PWA) provides offline capabilities, real-time speech processing, and intelligent conversational AI responses.
 
+## 🚀 Live Demo
+
+🌐 **Deployed on Netlify:**  
+[https://speakease-voice-assistant.netlify.app/](https://speakease-voice-assistant.netlify.app/)
+
 ## 🌟 Features
 
 - **🎤 Multiple Input Methods**: Voice recording, quick text input, and direct chat interface
