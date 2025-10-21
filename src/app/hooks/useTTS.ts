@@ -6,9 +6,7 @@ export const useTTS = () => {
   const [error, setError] = useState<string | null>(null);
   
   useEffect(() => {
-    // Initialize TTS without worker for Netlify compatibility
     if (typeof window !== 'undefined') {
-      // Check if browser supports speech synthesis
       if ('speechSynthesis' in window) {
         setIsInitialized(true);
         setError(null);
@@ -25,9 +23,7 @@ export const useTTS = () => {
       setIsSynthesizing(true);
       setError(null);
       
-      // Use Web Speech API directly (no worker)
       if (typeof window !== 'undefined' && window.speechSynthesis) {
-        // Cancel any ongoing speech
         window.speechSynthesis.cancel();
         
         const utterance = new SpeechSynthesisUtterance(text);
@@ -45,7 +41,16 @@ export const useTTS = () => {
           console.log('TTS completed');
         };
         
+        // --- THIS IS THE UPDATED PART ---
         utterance.onerror = (event) => {
+          // Ignore the 'interrupted' error, since we cause it intentionally.
+          if (event.error === 'interrupted') {
+            console.log('TTS intentionally interrupted');
+            // We also need to ensure the synthesizing state is false here
+            setIsSynthesizing(false);
+            return; 
+          }
+          
           setIsSynthesizing(false);
           setError(`TTS error: ${event.error}`);
           console.error('TTS error:', event);
@@ -59,11 +64,19 @@ export const useTTS = () => {
       console.error('TTS synthesis error:', error);
     }
   }, [isInitialized]);
+
+  const stop = useCallback(() => {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+      setIsSynthesizing(false);
+    }
+  }, []);
   
   return {
     isInitialized,
     isSynthesizing,
     error,
-    synthesize
+    synthesize,
+    stop
   };
 };

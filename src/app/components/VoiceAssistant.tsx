@@ -1,5 +1,9 @@
+// src/app/components/VoiceAssistant.tsx
+
 'use client';
 
+import LoginButton from './LoginButton';
+import { useSession } from "next-auth/react";
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWhisper } from '../hooks/useWhisper';
 import { useTTS } from '../hooks/useTTS';
@@ -8,6 +12,12 @@ import { LatencyMonitor } from './LatencyMonitor';
 import { LatencyMetrics } from '../../types/audio';
 
 export const VoiceAssistant: React.FC = () => {
+  const { data: session, status } = useSession();
+  const isAuthenticated = status === "authenticated";
+
+  // State for the TTS toggle feature
+  const [isTtsEnabled, setIsTtsEnabled] = useState(true);
+
   const [isActive, setIsActive] = useState(false);
   const [conversation, setConversation] = useState<string[]>([]);
   const [currentMetrics, setCurrentMetrics] = useState<LatencyMetrics | null>(null);
@@ -20,8 +30,55 @@ export const VoiceAssistant: React.FC = () => {
   const [networkStatus, setNetworkStatus] = useState('online');
   const conversationEndRef = useRef<HTMLDivElement>(null);
   
-  const whisper = useWhisper();
-  const tts = useTTS();
+  const { 
+    transcription, 
+    clearTranscription, 
+    ...whisperProps 
+  } = useWhisper();
+  
+  const { 
+    synthesize, 
+    isSynthesizing, 
+    stop: stopTTS, 
+    error: ttsError, 
+    isInitialized 
+  } = useTTS();
+
+  // Logic for saving/loading conversation to/from localStorage
+  useEffect(() => {
+    if (isAuthenticated && conversation.length > 0) {
+      const userEmail = session?.user?.email;
+      if (userEmail) {
+        localStorage.setItem(`conversation_${userEmail}`, JSON.stringify(conversation));
+      }
+    } else if (isAuthenticated && conversation.length === 0) {
+      const userEmail = session?.user?.email;
+      if (userEmail) {
+        localStorage.removeItem(`conversation_${userEmail}`);
+      }
+    }
+  }, [conversation, isAuthenticated, session]);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      const userEmail = session?.user?.email;
+      if (userEmail) {
+        const savedConversation = localStorage.getItem(`conversation_${userEmail}`);
+        if (savedConversation && conversation.length === 0) {
+          setConversation(JSON.parse(savedConversation));
+        }
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, session]);
+
+  const prevStatusRef = useRef(status);
+  useEffect(() => {
+    if (prevStatusRef.current === 'authenticated' && !isAuthenticated) {
+      setConversation([]);
+    }
+    prevStatusRef.current = status;
+  }, [status, isAuthenticated]);
   
   // Network status monitoring
   useEffect(() => {
@@ -29,18 +86,9 @@ export const VoiceAssistant: React.FC = () => {
       const online = navigator.onLine;
       setIsOnline(online);
       setNetworkStatus(online ? 'online' : 'offline');
-      
-      if (!online) {
-        console.log('Network went offline');
-      } else {
-        console.log('Network is back online');
-      }
     };
     
-    // Initial check
     updateNetworkStatus();
-    
-    // Listen for network changes
     window.addEventListener('online', updateNetworkStatus);
     window.addEventListener('offline', updateNetworkStatus);
     
@@ -66,9 +114,7 @@ export const VoiceAssistant: React.FC = () => {
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: [
             { role: 'system', content: systemPrompts[responseLength] },
@@ -79,30 +125,20 @@ export const VoiceAssistant: React.FC = () => {
       
       const data = await response.json();
       
-      // Handle offline/network errors
       if (!response.ok) {
-        if (response.status === 503 || data.offline) {
-          return "I'm currently offline and cannot access the AI service. Please check your internet connection and try again when you're back online.";
-        }
+        if (response.status === 401) return "Authentication error. Please sign in again.";
+        if (response.status === 503 || data.offline) return "I'm currently offline and cannot access the AI service. Please check your internet connection and try again when you're back online.";
         throw new Error(data.error || 'API request failed');
       }
       
       const apiLatency = Date.now() - apiStartTime;
-      
-      setCurrentMetrics(prev => prev ? {
-        ...prev,
-        apiLatency
-      } : null);
-      
+      setCurrentMetrics(prev => prev ? { ...prev, apiLatency } : null);
       return data.reply;
     } catch (fetchError: any) {
       console.error('Gemini API error:', fetchError);
-      
-      // Handle network errors specifically
       if (fetchError.message.includes('fetch') || fetchError.name === 'TypeError') {
         return "Network connection unavailable. I cannot access the AI service while offline. Please check your internet connection and try again.";
       }
-      
       return 'Sorry, I encountered an error processing your request. Please try again.';
     } finally {
       setIsTyping(false);
@@ -111,10 +147,8 @@ export const VoiceAssistant: React.FC = () => {
   
   const processText = useCallback(async (text: string) => {
     if (!text.trim()) return;
-    
     setConversation(prev => [...prev, `User: ${text}`]);
     
-    // Check if offline
     if (!navigator.onLine) {
       const offlineReply = "I'm currently offline and cannot access the AI service. Your message has been noted, but I cannot provide a response until the connection is restored.";
       setConversation(prev => [...prev, `Assistant: ${offlineReply}`]);
@@ -123,26 +157,22 @@ export const VoiceAssistant: React.FC = () => {
     
     const reply = await sendToGemini(text);
     setConversation(prev => [...prev, `Assistant: ${reply}`]);
-    tts.synthesize(reply);
-  }, [sendToGemini, tts.synthesize]);
-  
-  // Handle transcription results
-  useEffect(() => {
-    if (whisper.transcription && whisper.transcription.text.trim()) {
-      const sttLatency = Date.now() - startTime;
-      
-      setCurrentMetrics({
-        sttLatency,
-        apiLatency: 0,
-        ttsLatency: 0,
-        totalLatency: 0
-      });
-      
-      processText(whisper.transcription.text);
+    
+    // Conditionally synthesize speech based on the toggle state
+    if (isTtsEnabled) {
+      synthesize(reply);
     }
-  }, [whisper.transcription, processText, startTime]);
+  }, [sendToGemini, synthesize, isTtsEnabled]);
   
-  // Auto scroll to bottom of conversation
+  useEffect(() => {
+    if (transcription && transcription.text.trim()) {
+      const sttLatency = Date.now() - startTime;
+      setCurrentMetrics({ sttLatency, apiLatency: 0, ttsLatency: 0, totalLatency: 0 });
+      processText(transcription.text);
+      clearTranscription(); 
+    }
+  }, [transcription, processText, startTime, clearTranscription]);
+  
   useEffect(() => {
     conversationEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [conversation]);
@@ -150,13 +180,13 @@ export const VoiceAssistant: React.FC = () => {
   const toggleRecording = useCallback(() => {
     if (!isActive) {
       setStartTime(Date.now());
-      whisper.startRecording();
+      whisperProps.startRecording();
       setIsActive(true);
     } else {
-      whisper.stopRecording();
+      whisperProps.stopRecording();
       setIsActive(false);
     }
-  }, [isActive, whisper.startRecording, whisper.stopRecording]);
+  }, [isActive, whisperProps, startTime]);
   
   const handleTextSubmit = useCallback((e: React.FormEvent) => {
     e.preventDefault();
@@ -173,11 +203,21 @@ export const VoiceAssistant: React.FC = () => {
       setConversationInput('');
     }
   }, [conversationInput, processText]);
-  
+
+  const handleDeleteConversation = useCallback(() => {
+    if (!isAuthenticated || !session?.user?.email) return;
+    const isConfirmed = window.confirm("Are you sure you want to delete your chat history? This action cannot be undone.");
+    if (isConfirmed) {
+      setConversation([]);
+    }
+  }, [isAuthenticated, session]);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50">
-      {/* Header Section */}
-      <div className="bg-white/80 backdrop-blur-md border-b border-white/20 shadow-lg">
+      <div className="bg-white/80 backdrop-blur-md border-b border-white/20 shadow-lg relative">
+        <div className="absolute top-6 right-6 z-10">
+          <LoginButton />
+        </div>
         <div className="max-w-4xl mx-auto px-6 py-8">
           <div className="text-center">
             <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full mb-4">
@@ -192,23 +232,22 @@ export const VoiceAssistant: React.FC = () => {
               Intelligent voice conversations powered by Google Gemini AI
             </p>
             
-            {/* Status Indicators */}
             <div className="flex justify-center items-center gap-6 mt-6">
               <div className="flex items-center gap-2 px-3 py-2 bg-white/60 rounded-full shadow-sm">
                 <div className={`w-3 h-3 rounded-full ${
-                  whisper.isInitialized ? 'bg-green-500 animate-pulse' : 'bg-red-500'
+                  whisperProps.isInitialized ? 'bg-green-500 animate-pulse' : 'bg-red-500'
                 }`}></div>
                 <span className="text-sm font-medium text-gray-700">
-                  Speech {whisper.isInitialized ? 'Ready' : 'Loading'}
+                  Speech {whisperProps.isInitialized ? 'Ready' : 'Loading'}
                 </span>
               </div>
               
               <div className="flex items-center gap-2 px-3 py-2 bg-white/60 rounded-full shadow-sm">
                 <div className={`w-3 h-3 rounded-full ${
-                  tts.isInitialized ? 'bg-green-500 animate-pulse' : 'bg-red-500'
+                  isInitialized ? 'bg-green-500 animate-pulse' : 'bg-red-500'
                 }`}></div>
                 <span className="text-sm font-medium text-gray-700">
-                  TTS {tts.isInitialized ? 'Ready' : 'Loading'}
+                  TTS {isInitialized ? 'Ready' : 'Loading'}
                 </span>
               </div>
               
@@ -225,7 +264,6 @@ export const VoiceAssistant: React.FC = () => {
         </div>
       </div>
       
-      {/* Offline Banner */}
       {!isOnline && (
         <div className="bg-orange-500/90 backdrop-blur-md text-white">
           <div className="max-w-4xl mx-auto px-6 py-3">
@@ -241,18 +279,15 @@ export const VoiceAssistant: React.FC = () => {
         </div>
       )}
       
-      {/* Main Content */}
       <div className="max-w-4xl mx-auto px-6 py-8">
         <div className="grid gap-8 lg:grid-cols-3">
-          {/* Left Column - Controls */}
           <div className="lg:col-span-1">
-            {/* Voice Input */}
             <div className="bg-white/70 backdrop-blur-md rounded-3xl p-6 shadow-xl border border-white/20 mb-6">
               <h3 className="text-lg font-semibold text-gray-800 mb-4 text-center">Voice Input</h3>
               <div className="text-center">
                 <button
                   onClick={toggleRecording}
-                  disabled={!whisper.isInitialized || !tts.isInitialized}
+                  disabled={!isAuthenticated || !whisperProps.isInitialized || !isInitialized}
                   className={`w-24 h-24 rounded-full text-white font-semibold text-lg transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-opacity-50 ${
                     isActive 
                       ? 'bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600 focus:ring-red-500 animate-pulse shadow-xl' 
@@ -273,10 +308,41 @@ export const VoiceAssistant: React.FC = () => {
                 <p className="mt-4 text-sm text-gray-600">
                   {isActive ? 'Listening continuously... Click to stop' : 'Click to start continuous listening'}
                 </p>
+
+                {isSynthesizing && (
+                  <button
+                    onClick={stopTTS}
+                    className="mt-4 w-full px-4 py-2 bg-gradient-to-r from-red-500 to-pink-500 text-white font-semibold rounded-xl transition-all duration-300 transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-red-500 focus:ring-opacity-50 shadow-lg flex items-center justify-center gap-2"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+                    </svg>
+                    Stop Audio
+                  </button>
+                )}
               </div>
             </div>
             
-            {/* Response Length Control */}
+            <div className="bg-white/70 backdrop-blur-md rounded-3xl p-6 shadow-xl border border-white/20 mb-6">
+              <h3 className="text-lg font-semibold text-gray-800 mb-4">Audio Output</h3>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-600">AI Voice Response</span>
+                <button
+                  onClick={() => setIsTtsEnabled(!isTtsEnabled)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    isTtsEnabled ? 'bg-blue-500' : 'bg-gray-300'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      isTtsEnabled ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+
             <div className="bg-white/70 backdrop-blur-md rounded-3xl p-6 shadow-xl border border-white/20 mb-6">
               <h3 className="text-lg font-semibold text-gray-800 mb-4">Response Style</h3>
               <div className="flex bg-gray-100 rounded-2xl p-1">
@@ -306,7 +372,6 @@ export const VoiceAssistant: React.FC = () => {
               </p>
             </div>
             
-            {/* Quick Text Input */}
             <div className="bg-white/70 backdrop-blur-md rounded-3xl p-6 shadow-xl border border-white/20 mb-6">
               <h3 className="text-lg font-semibold text-gray-800 mb-4">Quick Message</h3>
               <form onSubmit={handleTextSubmit} className="space-y-3">
@@ -316,10 +381,11 @@ export const VoiceAssistant: React.FC = () => {
                   placeholder="Type your message here..."
                   className="w-full px-4 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none bg-white/80 backdrop-blur-sm"
                   rows={3}
+                  disabled={!isAuthenticated}
                 />
                 <button
                   type="submit"
-                  disabled={!textInput.trim()}
+                  disabled={!isAuthenticated || !textInput.trim()}
                   className="w-full px-4 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-medium rounded-2xl hover:from-blue-600 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 transform hover:scale-105"
                 >
                   Send Message
@@ -327,34 +393,50 @@ export const VoiceAssistant: React.FC = () => {
               </form>
             </div>
             
-            {/* Performance Monitor */}
             <div className="bg-white/70 backdrop-blur-md rounded-3xl p-6 shadow-xl border border-white/20">
               <LatencyMonitor metrics={currentMetrics} />
             </div>
           </div>
           
-          {/* Right Column - Conversation */}
           <div className="lg:col-span-2">
             <div className="bg-white/70 backdrop-blur-md rounded-3xl shadow-xl border border-white/20 overflow-hidden h-[600px] flex flex-col">
-              {/* Chat Header */}
-              <div className="px-6 py-4 bg-gradient-to-r from-blue-500 to-purple-600 text-white">
+              
+              <div className="flex items-center justify-between px-6 py-4 bg-gradient-to-r from-blue-500 to-purple-600 text-white">
                 <h3 className="text-xl font-semibold flex items-center gap-2">
                   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                   </svg>
                   Conversation
                 </h3>
+                {isAuthenticated && conversation.length > 0 && (
+                  <button 
+                    onClick={handleDeleteConversation} 
+                    title="Delete chat history"
+                    className="p-2 rounded-full hover:bg-white/20 transition-colors"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                )}
               </div>
               
-              {/* Messages Container */}
               <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                {conversation.length === 0 ? (
+                {!isAuthenticated && status !== 'loading' ? (
+                  <div className="text-center py-12">
+                    <svg className="w-16 h-16 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                    <p className="text-gray-500 text-lg font-medium">Please Sign In</p>
+                    <p className="text-gray-400 text-sm mt-2">Sign in to start your conversation with the AI assistant.</p>
+                  </div>
+                ) : conversation.length === 0 && status === 'authenticated' ? (
                   <div className="text-center py-12">
                     <svg className="w-16 h-16 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                     </svg>
                     <p className="text-gray-400 text-lg">Start a conversation!</p>
-                    <p className="text-gray-300 text-sm mt-2">Use voice input, quick message, or type directly below</p>
+                    <p className="text-gray-300 text-sm mt-2">Use voice input or type a message below.</p>
                   </div>
                 ) : (
                   conversation.map((message, index) => {
@@ -386,7 +468,6 @@ export const VoiceAssistant: React.FC = () => {
                   })
                 )}
                 
-                {/* Typing Indicator */}
                 {isTyping && (
                   <div className="flex justify-start">
                     <div className="max-w-sm lg:max-w-lg px-4 py-3 rounded-2xl bg-white/80 text-gray-800 rounded-bl-sm border border-gray-100 shadow-sm">
@@ -409,7 +490,6 @@ export const VoiceAssistant: React.FC = () => {
                 <div ref={conversationEndRef} />
               </div>
               
-              {/* Direct Input in Conversation */}
               <div className="px-6 py-4 border-t border-gray-200/50 bg-white/50">
                 <form onSubmit={handleConversationSubmit} className="flex gap-3">
                   <input
@@ -418,10 +498,11 @@ export const VoiceAssistant: React.FC = () => {
                     onChange={(e) => setConversationInput(e.target.value)}
                     placeholder="Type a message..."
                     className="flex-1 px-4 py-3 border border-gray-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white/80 backdrop-blur-sm"
+                    disabled={!isAuthenticated}
                   />
                   <button
                     type="submit"
-                    disabled={!conversationInput.trim()}
+                    disabled={!isAuthenticated || !conversationInput.trim()}
                     className="px-6 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-medium rounded-2xl hover:from-blue-600 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 transform hover:scale-105 flex items-center justify-center"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -437,11 +518,10 @@ export const VoiceAssistant: React.FC = () => {
       
       <AudioRecorder 
         onAudioData={handleAudioData}
-        isRecording={whisper.isRecording}
+        isRecording={whisperProps.isRecording}
       />
       
-      {/* Error Display */}
-      {(whisper.error || tts.error) && (
+      {(whisperProps.error || ttsError) && (
         <div className="fixed bottom-4 right-4 max-w-sm bg-red-500/90 backdrop-blur-md text-white p-4 rounded-2xl shadow-xl border border-red-400/20">
           <div className="flex items-start gap-3">
             <svg className="w-5 h-5 text-red-200 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -449,7 +529,7 @@ export const VoiceAssistant: React.FC = () => {
             </svg>
             <div>
               <p className="text-sm font-medium">Error</p>
-              <p className="text-xs mt-1 text-red-100">{whisper.error || tts.error}</p>
+              <p className="text-xs mt-1 text-red-100">{whisperProps.error || ttsError}</p>
             </div>
           </div>
         </div>

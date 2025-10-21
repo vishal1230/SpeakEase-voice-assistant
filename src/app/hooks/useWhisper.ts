@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { TranscriptionResult } from '../../types/audio';
 
 export const useWhisper = () => {
@@ -84,14 +84,21 @@ export const useWhisper = () => {
       setIsRecording(false);
     }
   }, []);
+
+  // --- ADD THIS FUNCTION ---
+  const clearTranscription = useCallback(() => {
+    setTranscription(null);
+  }, []);
   
-  return {
+  // --- WRAP RETURN IN useMemo ---
+  return useMemo(() => ({
     isInitialized,
     isRecording,
     transcription,
     error,
     isOnline,
     startRecording,
-    stopRecording
-  };
+    stopRecording,
+    clearTranscription // <-- EXPORT THE NEW FUNCTION
+  }), [isInitialized, isRecording, transcription, error, isOnline, startRecording, stopRecording, clearTranscription]);
 };

@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "../auth/[...nextauth]/route";
 
 export async function POST(request: NextRequest) {
+  const session = await getServerSession(authOptions);
+
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   try {
     const { messages } = await request.json();
     
@@ -33,10 +40,10 @@ Give a well-structured response of 4-6 sentences that fully addresses the user's
 
     // Add timeout for network requests
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 10 second timeout
 
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:generateContent?key=${process.env.GOOGLE_AI_API_KEY}`,
       {
         method: 'POST',
         headers: {
@@ -52,7 +59,7 @@ Give a well-structured response of 4-6 sentences that fully addresses the user's
             temperature: 0.7,
             topK: 40,
             topP: 0.95,
-            maxOutputTokens: 500,
+            maxOutputTokens: 8192,
           }
         }),
         signal: controller.signal
