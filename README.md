@@ -58,7 +58,7 @@ Ensure these configuration files exist in your project root:
 Open [http://localhost:3000](http://localhost:3000) in your browser to see the application.
 
 ## 📁 Project Structure
-
+```
 next-stt-app/
 ├── public/
 │ ├── manifest.json # PWA manifest
@@ -90,7 +90,7 @@ next-stt-app/
 ├── postcss.config.js # PostCSS configuration
 ├── tailwind.config.js # Tailwind CSS configuration
 └── tsconfig.json # TypeScript configuration
-
+```
 
 ## 🎯 Usage
 
