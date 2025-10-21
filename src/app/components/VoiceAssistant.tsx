@@ -1,5 +1,3 @@
-// src/app/components/VoiceAssistant.tsx
-
 'use client';
 
 import LoginButton from './LoginButton';
